@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"io"
 	//"io/ioutil"
 
@@ -19,7 +20,7 @@ import (
 	"./sram"
 )
 
-type buffer struct{
+type buffer struct {
 	*bytes.Buffer
 }
 
@@ -29,10 +30,23 @@ func (b *buffer) Close() error {
 
 var out files.Writer
 
+var lastSum uint32
+var last = make([]byte, 256)
+
+type Diff struct{
+	Offset byte
+	Old int
+	New int
+}
+
+func (d *Diff) String() string {
+	return fmt.Sprintf("%02X:%d→%d", d.Offset, d.Old, d.New)
+}
+
 func PrintSRAM(ctx context.Context, fname string) {
 	f, err := files.Open(ctx, fname)
 	if err != nil {
-		glog.Fatal(err)
+		glog.Fatalf("%q: %s", fname, err)
 	}
 	defer f.Close()
 
@@ -40,9 +54,30 @@ func PrintSRAM(ctx context.Context, fname string) {
 		glog.Fatal(err)
 	}
 
+	buf := make([]byte, 256)
+	if _, err := f.Read(buf); err != nil {
+		glog.Fatal(err)
+	}
+
+	if buf[0] == 0x60 && buf[1] == 0x60 {
+		fmt.Fprintln(out, "state uninitialized")
+		return
+	}
+
+	h := fnv.New32()
+	h.Write(buf)
+	sum := h.Sum32()
+
+	if sum == lastSum {
+		glog.Infof("no change from hash: %08X", sum)
+		return
+	}
+
+	r := bytes.NewReader(buf)
+
 	var data sram.ZeldaData
 
-	if err := binary.Read(f, binary.LittleEndian, &data); err != nil {
+	if err := binary.Read(r, binary.LittleEndian, &data); err != nil {
 		glog.Fatal(err)
 	}
 
@@ -50,6 +85,22 @@ func PrintSRAM(ctx context.Context, fname string) {
 
 	json.WriteTo(b, data)
 	fmt.Fprintln(out, b)
+
+	var diffs []*Diff
+	for i := range buf[:0xD3] {
+		if last[i] != buf[i] {
+			diffs = append(diffs, &Diff{
+				Offset: byte(i),
+				Old: int(last[i]),
+				New: int(buf[i]),
+			})
+		}
+	}
+
+	fmt.Fprintf(out, "%v\n", diffs)
+
+	copy(last, buf)
+	lastSum = sum
 }
 
 func main() {
@@ -67,7 +118,7 @@ func main() {
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-	    glog.Fatal(err)
+		glog.Fatal(err)
 	}
 	defer watcher.Close()
 
@@ -84,8 +135,8 @@ func main() {
 				return
 
 			case event := <-watcher.Events:
-				fmt.Fprintf(out, "%#v\n", event)
-				if event.Op & fsnotify.Write != 0 {
+				//fmt.Fprintf(out, "%#v\n", event)
+				if event.Op&fsnotify.Write != 0 {
 					PrintSRAM(ctx, fname)
 				}
 
@@ -94,7 +145,7 @@ func main() {
 			}
 		}
 	}()
-	
+
 	if err := watcher.Add(fname); err != nil {
 		glog.Fatal(err)
 	}
