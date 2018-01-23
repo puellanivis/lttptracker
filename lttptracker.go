@@ -53,9 +53,10 @@ func PrintSRAM(ctx context.Context, fname string) {
 }
 
 func main() {
-	defer util.Init("lttp-tracking", 0, 1)()
+	finish, ctx := util.Init("lttp-tracking", 0, 1)
+	defer finish()
 
-	ctx, cancel := context.WithCancel(util.Context())
+	ctx, cancel := context.WithCancel(ctx)
 
 	w, err := files.Create(ctx, "-")
 	if err != nil {
